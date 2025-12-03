@@ -27,11 +27,11 @@ This emulator requires **Multicore firmware** installed on your SF2000.
 
 Place at least one of these in the `bios/` folder:
 
-| Filename | Version | Recommended for |
-|----------|---------|-----------------|
-| `kick13.rom` | Kickstart 1.3 | Most games (default) |
-| `kick20.rom` | Kickstart 2.0 | Some newer games |
-| `kick30.rom` | Kickstart 3.0 | AGA-era games |
+| Filename | Version |
+|----------|---------|
+| `kick13.rom` | Kickstart 1.3 |
+| `kick20.rom` | Kickstart 2.0 |
+| `kick30.rom` | Kickstart 3.0 |
 
 The emulator will automatically select the best available ROM.
 

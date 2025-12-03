@@ -1,0 +1,32 @@
+# Build artifacts
+*.o
+*.a
+*.elf
+*.map
+core_87000000
+
+# Logs
+*.log
+build.log
+
+# Release folder
+release/
+*.zip
+
+# Old makefiles for other platforms (keep only SF2000-relevant ones)
+# Makefile.dc
+# Makefile.dingux
+# Makefile.gp2x
+# Makefile.linux
+# Makefile.windows
+
+# Compiled folder
+compiled/
+
+# IDE/Editor
+.vscode/
+*.swp
+*~
+
+# macOS
+.DS_Store

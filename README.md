@@ -34,9 +34,8 @@ Place Kickstart ROMs in `bios/` folder with these filenames:
 |----------|---------|
 | `kick13.rom` | Kickstart 1.3 |
 | `kick20.rom` | Kickstart 2.0 |
-| `kick31.rom` | Kickstart 3.1 |
 
-Kickstart 1.3 recommended for best compatibility.
+Kickstart 1.3 recommended for best compatibility. Kickstart 3.0 is not supported.
 
 ## Controls
 
@@ -80,11 +79,9 @@ Animated splash screen at startup ensures proper audio initialization before gam
 ## Multi-Disk Games
 
 For multi-disk games, name your ADF files with disk number:
-- `Game (Disk 1 of 3).adf`
-- `Game (Disk 2 of 3).adf`
-- `Game (Disk 3 of 3).adf`
-
-Use L/R buttons to swap disks during gameplay.
+- `Game_1.adf`
+- `Game_2.adf`
+- `Game_3.adf`
 
 ## Build Differences: SF2000 vs GB300
 
@@ -117,8 +114,6 @@ The **only difference** is the final linking step, which uses platform-specific:
 ## Known Issues
 
 - AGA games will not work (this is an OCS emulator)
-- CPU speed auto-fix activates after 3 seconds on first load
-- Virtual keyboard layout is basic
 - Loading saves made in interlace mode not supported
 
 ## Credits
@@ -126,3 +121,4 @@ The **only difference** is the final linking step, which uses platform-specific:
 - Original uae4all by Chui, john4p, TomB, notaz
 - Raspberry Pi port by Chips-fr
 - SF2000/GB300 port for multicore framework
+- Retro Handheld Discord community

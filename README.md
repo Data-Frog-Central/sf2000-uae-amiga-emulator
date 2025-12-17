@@ -1,8 +1,8 @@
 # UAE4ALL for SF2000 / GB300
 
-Amiga 500 emulator for Data Frog SF2000 and GB300 handheld devices.
+World's first Amiga 500 emulator for Data Frog SF2000 and GB300 handheld devices. And they said it couldn't be done!
 
-Based on uae4all-rpi by Chips-fr, ported to SF2000/GB300 multicore framework.
+Based on uae4all-psp, ported to SF2000/GB300 multicore framework.
 
 ## Downloads
 

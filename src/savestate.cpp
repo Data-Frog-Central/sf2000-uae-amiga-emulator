@@ -75,6 +75,18 @@ extern "C" int fs_close(int fd);
 extern "C" int fs_sync(const char *path);
 extern "C" int64_t fs_lseek(int fd, int64_t offset, int whence);
 
+// v151: Functions needed for hybrid restore approach
+extern void reset_drawing(void);
+extern void calcdiw_wrapper(void);
+extern void expand_sprres_wrapper(void);
+extern void reinit_bplcon0_after_restore(void);
+extern void init_hardware_frame_wrapper(void);
+
+// v151: DIW state machine
+enum diw_states { DIW_waiting_start, DIW_waiting_stop };
+extern enum diw_states *get_diwstate_ptr(void);
+extern enum diw_states *get_hdiwstate_ptr(void);
+
 // SF2000 file flags
 #define SF_O_RDONLY 0x0000
 #define SF_O_WRONLY 0x0001
@@ -674,6 +686,60 @@ void savestate_restore_finish (void)
     	update_audio();
     savestate_state = 0;
 //    unset_special(SPCFLAG_BRK);
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * v151: HYBRID APPROACH - Best of v140 + v145!
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * PROBLEM:
+     * - v140: Multiple loads work (Benefactor), but 1st load fails for some games
+     * - v145: 1st load works for ALL games, but 2nd/3rd loads fail
+     *
+     * SOLUTION:
+     * - 1st load: Use v145 method (full reinit - BPLCON0, calcdiw, diwstate)
+     * - 2nd+ load: Use v140 method (only reset_drawing - no extra reinits)
+     *
+     * This is not a perfect solution, but the best working compromise found
+     * after extensive testing (~75 versions).
+     * ═══════════════════════════════════════════════════════════════════════ */
+
+    static int load_count = 0;
+    load_count++;
+
+    write_log("v151: HYBRID RESTORE - load #%d\n", load_count);
+
+    /* ALWAYS do reset_drawing() - this is common to both v140 and v145 */
+    reset_drawing();
+    write_log("v151: reset_drawing() called\n");
+
+    if (load_count == 1) {
+        /* ═══ 1st LOAD: Use v145 method (full reinit) ═══ */
+        write_log("v151: 1st load - using v145 FULL REINIT method\n");
+
+        init_hardware_frame_wrapper();
+        write_log("v151: init_hardware_frame() called\n");
+
+        *get_diwstate_ptr() = DIW_waiting_start;
+        *get_hdiwstate_ptr() = DIW_waiting_start;
+        write_log("v151: diwstate reset to waiting_start\n");
+
+        reinit_bplcon0_after_restore();
+        write_log("v151: BPLCON0 reinit called\n");
+
+        calcdiw_wrapper();
+        write_log("v151: calcdiw() called\n");
+
+        expand_sprres_wrapper();
+        write_log("v151: expand_sprres() called\n");
+
+    } else {
+        /* ═══ 2nd+ LOAD: Use v140 method (minimal) ═══ */
+        write_log("v151: load #%d - using v140 MINIMAL method (only reset_drawing)\n", load_count);
+        /* Nothing else! Just reset_drawing() which was already called above */
+    }
+
+    write_log("v151: RESTORE COMPLETE (load #%d)\n", load_count);
+
     notice_screen_contents_lost();
     gui_set_message("Restored", 50);
 }

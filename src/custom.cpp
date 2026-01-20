@@ -2290,7 +2290,18 @@ static _INLINE_ void DIWSTOP (int hpos, uae_u16 v)
     calcdiw ();
 }
 
-#define DIWHIGH(HPOS,V)
+/* v143: DIWHIGH was empty macro - now a real function!
+ * This is CRITICAL for ECS extended display window support.
+ * Without this, games using DIWHIGH register have wrong display. */
+static _INLINE_ void DIWHIGH (int hpos, uae_u16 v)
+{
+    if (diwhigh_written && diwhigh == v)
+        return;
+    decide_line (hpos);
+    diwhigh_written = 1;
+    diwhigh = v;
+    calcdiw ();
+}
 
 static _INLINE_ void DDFSTRT (int hpos, uae_u16 v)
 {
@@ -4185,15 +4196,13 @@ uae_u8 *restore_custom (uae_u8 *src)
     RW;				/* 1DA ? */
     new_beamcon0 = RW;		/* 1DC BEAMCON0 */
     RW;				/* 1DE ? */
-#ifdef NO_VKBD
-    RW;				/* 1E0 ? */
-    RW;				/* 1E2 ? */
-    RW;				/* 1E4 ? */
-#else
-    vkbd_button2 = (SDLKey) RW;
-    vkbd_button3 = (SDLKey) RW;
-    vkbd_button4 = (SDLKey) RW;
-#endif
+    /* v143: Restore diwhigh with flag from high bit!
+     * This is CRITICAL - without it ECS display window doesn't work after restore */
+    RW;				/* 1E0 - unused */
+    RW;				/* 1E2 - unused */
+    diwhigh = RW;		/* 1E4 DIWHIGH */
+    diwhigh_written = (diwhigh & 0x8000) ? 1 : 0;
+    diwhigh &= 0x7fff;
     RW;				/* 1E6 ? */
     RW;				/* 1E8 ? */
     RW;				/* 1EA ? */
@@ -4332,15 +4341,11 @@ uae_u8 *save_custom (int *len)
     SW (0);			/* 1DA */
     SW (beamcon0);		/* 1DC BEAMCON0 */
     SW (0);			/* 1DE */
-#ifdef NO_VKBD
-    SW (0);			/* 1E0 */
-    SW (0);			/* 1E2 */
-    SW (0);			/* 1E4 */
-#else
-    SW (vkbd_button2);
-    SW (vkbd_button3);
-    SW (vkbd_button4);
-#endif
+    /* v143: Save diwhigh with flag in high bit!
+     * 1E4 is DIWHIGH register - critical for ECS display window */
+    SW (0);			/* 1E0 - unused */
+    SW (0);			/* 1E2 - unused */
+    SW (diwhigh | (diwhigh_written ? 0x8000 : 0));  /* 1E4 DIWHIGH */
     SW (0);			/* 1E6 */
     SW (0);			/* 1E8 */
     SW (0);			/* 1EA */
@@ -4418,4 +4423,69 @@ uae_u8 *save_custom_sprite(int *len, int num)
     SB (spr[num].armed ? 1 : 0);
     *len = dst - dstbak;
     return dstbak;
+}
+
+/* v143: Non-static wrappers for savestate.cpp to call after restore
+ * These functions are static/inline in custom.cpp but needed externally */
+
+/* Wrapper for calcdiw() */
+void calcdiw_wrapper(void)
+{
+    calcdiw();
+}
+
+/* Wrapper for expand_sprres() */
+void expand_sprres_wrapper(void)
+{
+    expand_sprres();
+}
+
+/* Wrapper for SPRxPOS_1() */
+void SPRxPOS_1_wrapper(uae_u16 v, int num, int hpos)
+{
+    SPRxPOS_1(v, num, hpos);
+}
+
+/* Wrapper for SPRxCTL_1() */
+void SPRxCTL_1_wrapper(uae_u16 v, int num, int hpos)
+{
+    SPRxCTL_1(v, num, hpos);
+}
+
+/* Direct access to diwstate/hdiwstate for restore */
+enum diw_states *get_diwstate_ptr(void)
+{
+    return &diwstate;
+}
+
+enum diw_states *get_hdiwstate_ptr(void)
+{
+    return &hdiwstate;
+}
+
+/* v144: BPLCON0 reinit trick - the ORIGINAL fix from raport_save.txt!
+ * This forces BPLCON0() to recalculate planes_bplcon0, res_bplcon0,
+ * curr_diagram and call expand_fmodes().
+ *
+ * This is what customreset() does at lines 3601-3603:
+ *   v = bplcon0;
+ *   BPLCON0(0, 0);
+ *   BPLCON0(0, v);
+ */
+void reinit_bplcon0_after_restore(void)
+{
+    uae_u16 saved = bplcon0;
+    bplcon0 = 0;  /* Force BPLCON0() to actually process */
+    BPLCON0(0, saved);
+}
+
+/* v145: init_hardware_frame wrapper - THE MISSING RESET!
+ * This resets the critical line-tracking variables:
+ * - last_decide_line_hpos, last_diw_pix_hpos, last_ddf_pix_hpos
+ * - last_sprite_hpos, last_fetch_hpos
+ * Without this, 2nd/3rd loads have partial screen updates (20-40px on right)
+ * because decide_line() thinks it already processed part of the line! */
+void init_hardware_frame_wrapper(void)
+{
+    init_hardware_frame();
 }

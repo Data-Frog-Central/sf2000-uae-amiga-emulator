@@ -141,3 +141,41 @@ static __inline__ void fuzzy_memset_le32_1 (void *p, uae_u32 c, int offset, int 
 #if defined(AMIGA) && defined(__GNUC__)
 #include "od-amiga/amiga-kludges.h"
 #endif
+
+/* v098: Overscan system (3 modes) */
+typedef enum {
+    OVERSCAN_OFF = 0,      /* Fast mode - direct rendering to 320×240 */
+    OVERSCAN_ONLY_Y = 1,   /* Buffer 320×288 → copy → 320×240 */
+    OVERSCAN_BOTH_XY = 2   /* Buffer 400×288 → copy → 320×240 */
+} overscan_mode_t;
+
+/* Stałe rozmiarów dla każdego trybu */
+#define OVERSCAN_OFF_WIDTH      320
+#define OVERSCAN_OFF_HEIGHT     240
+
+#define OVERSCAN_Y_WIDTH        320
+#define OVERSCAN_Y_HEIGHT       288
+#define OVERSCAN_Y_PADDING_TOP  24   /* (288-240)/2 */
+
+#define OVERSCAN_XY_WIDTH       400
+#define OVERSCAN_XY_HEIGHT      288
+#define OVERSCAN_XY_PADDING_X   40   /* (400-320)/2 */
+#define OVERSCAN_XY_PADDING_Y   24   /* (288-240)/2 */
+
+/* Struktura ustawień overscan */
+typedef struct {
+    overscan_mode_t mode;       /* OFF / ONLY_Y / BOTH_XY */
+
+    /* Parametry aktywne tylko gdy mode != OFF */
+    int y_offset;               /* -50 do +50 (domyślnie 0) */
+    int y_stretch;              /* 0 do +48 (domyślnie 0) */
+    int x_offset;               /* -40 do +40 (domyślnie 0, tylko BOTH_XY) */
+    int x_stretch;              /* 0 do +80 (domyślnie 0, tylko BOTH_XY) */
+
+    /* Flaga wymagająca restartu */
+    int pending_mode_change;    /* 1 = zmieniono tryb, czeka na restart */
+    overscan_mode_t pending_mode; /* nowy tryb po restarcie */
+} overscan_settings_t;
+
+/* Globalna instancja (definicja w retrogfx.cpp) */
+extern overscan_settings_t overscan_config;

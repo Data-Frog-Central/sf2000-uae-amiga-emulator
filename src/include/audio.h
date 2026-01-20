@@ -96,6 +96,8 @@ extern void audio_reset (void);
 extern void update_audio (void);
 extern void schedule_audio (void);
 extern void audio_evhandler (void);
+extern void audio_reset_last_cycles(void);   /* v116: reset static last_cycles after restore */
+extern void audio_reset_sample_evtime(void); /* v116: reset static next_sample_evtime after restore */
 // extern void audio_channel_enable_dma (int n_channel);
 // extern void audio_channel_disable_dma (int n_channel);
 extern void check_dma_audio(void);

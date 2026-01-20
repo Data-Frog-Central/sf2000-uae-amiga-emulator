@@ -57,6 +57,21 @@ int scaled_sample_evtime_ok;
 static unsigned long last_cycles;
 static unsigned long next_sample_evtime;
 
+/* v116: Helper functions for savestate restore - reset static audio variables
+ * These are called from restore_state_from_buffer() to sync audio timing
+ * after restore, similar to CIA_reset_div10() for CIA synchronization.
+ * v117: Changed to use 0 instead of get_cycles() - like rsn8887/uae4all2
+ * This forces update_audio() to recalibrate timing from scratch. */
+void audio_reset_last_cycles(void)
+{
+    last_cycles = 0;  /* v117: Use 0, not get_cycles()! */
+}
+
+void audio_reset_sample_evtime(void)
+{
+    next_sample_evtime = scaled_sample_evtime;
+}
+
 typedef uae_s8 sample8_t;
 
 #ifdef EXACT_AUDIO
@@ -646,7 +661,10 @@ audio_channel_vol[5] = 0;
 	    for (i = 0; i < 4; i++)
 		    audio_channel[i].dmaen = (dmacon & 0x200) && (dmacon & (1 << i));
 
-    last_cycles = get_cycles(); //0;
+    /* v117: Use 0, not get_cycles() - like rsn8887/uae4all2
+     * This ensures update_audio() properly recalibrates timing after restore.
+     * Original comment shows someone changed it FROM 0 TO get_cycles() - BAD! */
+    last_cycles = 0;
     next_sample_evtime = scaled_sample_evtime;
 
     schedule_audio ();
@@ -1040,9 +1058,17 @@ uae_u8 *restore_audio (uae_u8 *src, int i)
     acd->lc = restore_u32 ();
     acd->pt = restore_u32 ();
     audio_channel_evtime[i] = restore_u32 ();
-    AUDxPER(i,backper ? backper * CYCLE_UNIT : PERIOD_MAX);
+
+    /* v117: DON'T call AUDxPER/AUDxDAT during restore!
+     * rsn8887/uae4all2 has these commented out for same reason.
+     * AUDxDAT() has dangerous side effects:
+     * - If audio_channel_state[i] == 0, it CHANGES state to 2!
+     * - Calls schedule_audio() and events_schedule() prematurely!
+     * This corrupts the loaded state, especially from kickstart boot.
+     * Use direct assignment instead (no side effects): */
+    acd->per = backper == 0 ? PERIOD_MAX : backper * CYCLE_UNIT;
     audio_channel[i].dmaen = (dmacon & 0x200) && (dmacon & (1 << i));
-    AUDxDAT(i,0);
+    acd->dat = 0;  /* Direct assignment, not AUDxDAT()! */
 
     return src;
 }

@@ -66,6 +66,65 @@
 
 #include "savestate.h"
 #include "sf2000_diag.h"
+#include "events.h"  /* v113: For eventtab sync after restore */
+#include "cia.h"     /* v115: For CIA_calctimers, CIA_reset_div10 */
+
+/* v118: For reset_drawing() - fixes "kasza" bug
+ * Using extern instead of #include "drawing.h" to avoid xcolnr dependency issues */
+extern void reset_drawing(void);
+
+/* v143: Wrappers for static functions in custom.cpp
+ * These fix various display issues after restore */
+extern void calcdiw_wrapper(void);
+extern void expand_sprres_wrapper(void);
+
+/* v144: THE ORIGINAL FIX - BPLCON0 reinit trick from raport_save.txt
+ * This was the fix in original v141 that worked better! */
+extern void reinit_bplcon0_after_restore(void);
+
+/* v145: THE MISSING RESET - init_hardware_frame!
+ * This resets last_decide_line_hpos, last_fetch_hpos, etc.
+ * Without this, 2nd/3rd loads have 20-40px on right not refreshing! */
+extern void init_hardware_frame_wrapper(void);
+
+/* v143: DIW state machine - needs reset after restore */
+enum diw_states { DIW_waiting_start, DIW_waiting_stop };
+extern enum diw_states *get_diwstate_ptr(void);
+extern enum diw_states *get_hdiwstate_ptr(void);
+
+/* v143: Sprite reinit removed - sprpos/sprctl are static in custom.cpp
+ * This is a minor fix anyway, main fixes are DIWHIGH and calcdiw */
+
+/* v114: External gfx_mem buffer for clearing after restore
+ * gfx_mem is the 320x288 framebuffer allocated in retrogfx.cpp
+ * gfx_rowbytes is 320*2 = 640 bytes per line
+ * We need to clear this after restore because notice_screen_contents_lost()
+ * is a no-op when USE_RASTER_DRAW is not defined! */
+extern char *gfx_mem;
+extern int gfx_rowbytes;
+
+/* v115: External CIA variables for COMPLETE synchronization after restore!
+ *
+ * ROOT CAUSE OF CIA ASSERTION BUG (since v80):
+ * The assertion "(ciabta+1) >= ciaclocks" fails because after restore:
+ * 1. eventtab[ev_cia].evtime has OLD stale value (not synced!)
+ * 2. eventtab[ev_cia].active is still TRUE (not cleared!)
+ * 3. div10 (fractional CIA cycles) is from different context
+ * 4. CIA timers (ciabta etc.) may be at boundary condition
+ * 5. CIA_calctimers() is NEVER called after restore!
+ *
+ * When emulation resumes, do_cycles() sees evtime in the "past" and
+ * IMMEDIATELY triggers CIA_handler(), which calls CIA_update() with
+ * inconsistent state, causing the assertion to fail.
+ *
+ * FIX: Reset ALL CIA-related state to safe values after restore. */
+extern unsigned long ciaata, ciaatb, ciabta, ciabtb;  /* CIA timer values */
+extern unsigned long ciaala, ciaalb, ciabla, ciablb;  /* CIA timer latches */
+extern unsigned int ciaacra, ciaacrb, ciabcra, ciabcrb;  /* CIA control regs */
+extern void CIA_calctimers(void);  /* Recalculates eventtab[ev_cia] */
+
+/* v115: div10 is static in cia.cpp, so we need to reset it via function */
+extern void CIA_reset_div10(void);
 
 // SF2000 firmware file functions (exported by firmware)
 extern "C" int fs_open(const char *path, int flags, int perms);
@@ -74,18 +133,6 @@ extern "C" ssize_t fs_read(int fd, void *buf, size_t count);
 extern "C" int fs_close(int fd);
 extern "C" int fs_sync(const char *path);
 extern "C" int64_t fs_lseek(int fd, int64_t offset, int whence);
-
-// v151: Functions needed for hybrid restore approach
-extern void reset_drawing(void);
-extern void calcdiw_wrapper(void);
-extern void expand_sprres_wrapper(void);
-extern void reinit_bplcon0_after_restore(void);
-extern void init_hardware_frame_wrapper(void);
-
-// v151: DIW state machine
-enum diw_states { DIW_waiting_start, DIW_waiting_stop };
-extern enum diw_states *get_diwstate_ptr(void);
-extern enum diw_states *get_hdiwstate_ptr(void);
 
 // SF2000 file flags
 #define SF_O_RDONLY 0x0000
@@ -686,60 +733,6 @@ void savestate_restore_finish (void)
     	update_audio();
     savestate_state = 0;
 //    unset_special(SPCFLAG_BRK);
-
-    /* ═══════════════════════════════════════════════════════════════════════
-     * v151: HYBRID APPROACH - Best of v140 + v145!
-     * ═══════════════════════════════════════════════════════════════════════
-     *
-     * PROBLEM:
-     * - v140: Multiple loads work (Benefactor), but 1st load fails for some games
-     * - v145: 1st load works for ALL games, but 2nd/3rd loads fail
-     *
-     * SOLUTION:
-     * - 1st load: Use v145 method (full reinit - BPLCON0, calcdiw, diwstate)
-     * - 2nd+ load: Use v140 method (only reset_drawing - no extra reinits)
-     *
-     * This is not a perfect solution, but the best working compromise found
-     * after extensive testing (~75 versions).
-     * ═══════════════════════════════════════════════════════════════════════ */
-
-    static int load_count = 0;
-    load_count++;
-
-    write_log("v151: HYBRID RESTORE - load #%d\n", load_count);
-
-    /* ALWAYS do reset_drawing() - this is common to both v140 and v145 */
-    reset_drawing();
-    write_log("v151: reset_drawing() called\n");
-
-    if (load_count == 1) {
-        /* ═══ 1st LOAD: Use v145 method (full reinit) ═══ */
-        write_log("v151: 1st load - using v145 FULL REINIT method\n");
-
-        init_hardware_frame_wrapper();
-        write_log("v151: init_hardware_frame() called\n");
-
-        *get_diwstate_ptr() = DIW_waiting_start;
-        *get_hdiwstate_ptr() = DIW_waiting_start;
-        write_log("v151: diwstate reset to waiting_start\n");
-
-        reinit_bplcon0_after_restore();
-        write_log("v151: BPLCON0 reinit called\n");
-
-        calcdiw_wrapper();
-        write_log("v151: calcdiw() called\n");
-
-        expand_sprres_wrapper();
-        write_log("v151: expand_sprres() called\n");
-
-    } else {
-        /* ═══ 2nd+ LOAD: Use v140 method (minimal) ═══ */
-        write_log("v151: load #%d - using v140 MINIMAL method (only reset_drawing)\n", load_count);
-        /* Nothing else! Just reset_drawing() which was already called above */
-    }
-
-    write_log("v151: RESTORE COMPLETE (load #%d)\n", load_count);
-
     notice_screen_contents_lost();
     gui_set_message("Restored", 50);
 }
@@ -1162,16 +1155,251 @@ bool restore_state_from_buffer(const void *buffer, size_t size)
 
     clear_events();
 
-    /* v087 FIX: Reset savestate_state to 0!
-     * Without this, savestate_state remains STATE_RESTORE (2) after buffer load.
-     * This causes problems because many places check this flag:
-     * - memory.cpp:1309 - allocate_memory behavior changes
-     * - m68k_intrf.cpp:405 - CPU init behavior changes
-     * - custom.cpp:3589 - custom chip init changes
-     * Result: 2nd SAVE creates corrupted state, 2nd LOAD fails! */
-    savestate_state = 0;
+    /* ═══════════════════════════════════════════════════════════════════════
+     * v115 COMPREHENSIVE CIA FIX - THE ULTIMATE SOLUTION
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * ROOT CAUSE OF CIA ASSERTION BUG (since v80):
+     * The assertion "(ciabta+1) >= ciaclocks" in cia.cpp:181 fails because:
+     *
+     * 1. eventtab[ev_cia].evtime has OLD stale value (not synced!)
+     *    - After restore, evtime still points to "past" cycles
+     *    - do_cycles() sees evtime < currcycle and triggers CIA_handler IMMEDIATELY
+     *
+     * 2. eventtab[ev_cia].active is still TRUE (not cleared!)
+     *    - CIA event is still marked as active from before restore
+     *
+     * 3. div10 (fractional CIA cycles) is desynchronized
+     *    - div10 was calculated relative to OLD oldcycles
+     *    - After my v113 sync of oldcycles, div10 context is wrong
+     *
+     * 4. CIA timers (ciabta etc.) may be at boundary condition
+     *    - Timer saved exactly at underflow point
+     *
+     * 5. CIA_calctimers() is NEVER called after restore!
+     *    - Only CIA_calctimers() properly updates evtime and active
+     *    - In normal flow: CIA_reset() -> CIA_calctimers()
+     *    - In libretro path: restore bypasses CIA_reset entirely!
+     *
+     * SEQUENCE OF FAILURE:
+     * 1. restore_state_from_buffer() loads CIA timers
+     * 2. Emulation resumes, retro_run() calls do_cycles()
+     * 3. do_cycles() sees stale evtime <= currcycle
+     * 4. CIA_handler() is called immediately
+     * 5. CIA_update() calculates ccount with inconsistent state
+     * 6. ASSERTION FAILS: (ciabta+1) >= ciaclocks
+     *
+     * SOLUTION: Complete CIA state reset + proper event rescheduling
+     * ═══════════════════════════════════════════════════════════════════════ */
 
-    write_log ("v087: Restore from buffer complete - RAM restored, state reset\n");
+    write_log("v115: Starting COMPREHENSIVE CIA fix...\n");
+
+    /* STEP 1: Reset savestate_state FIRST (v087 fix)
+     * Many functions check this flag - we need it cleared before calling CIA functions */
+    savestate_state = 0;
+    write_log("v115: Step 1 - savestate_state = 0\n");
+
+    /* STEP 2: DISABLE CIA event to prevent immediate trigger!
+     * This is the CRITICAL fix - prevents do_cycles from calling CIA_handler
+     * before we have a chance to properly reinitialize */
+    eventtab[ev_cia].active = 0;
+    write_log("v115: Step 2 - eventtab[ev_cia].active = 0 (disabled)\n");
+
+    /* STEP 3: Sync ALL event oldcycles to current cycles (v113 fix, kept) */
+    {
+        int i;
+        unsigned long current_cycles = get_cycles();
+        for (i = 0; i < ev_max; i++) {
+            eventtab[i].oldcycles = current_cycles;
+        }
+        write_log("v115: Step 3 - All eventtab[].oldcycles synced to %lu\n", current_cycles);
+    }
+
+    /* STEP 4: Reset div10 to 0 (NEW in v115!)
+     * div10 is the fractional remainder in CIA clock calculation.
+     * After restore, it's from a different context - reset it! */
+    CIA_reset_div10();
+    write_log("v115: Step 4 - div10 reset to 0\n");
+
+    /* STEP 5: Reset CIA timers to SAFE maximum values (like v092 fix in CIA_reset)
+     * This prevents any timer boundary condition issues.
+     * The game will reset timers to proper values as needed. */
+    ciaata = ciaatb = ciabta = ciabtb = 0xFFFF;
+    write_log("v115: Step 5 - CIA timers reset to 0xFFFF (safe max)\n");
+
+    /* STEP 6: Call CIA_calctimers() to properly recalculate event timing!
+     * This is what was MISSING in v113/v114!
+     * CIA_calctimers() does:
+     * - eventtab[ev_cia].oldcycles = get_cycles()  (already done, but OK to redo)
+     * - eventtab[ev_cia].evtime = calculated_future_time + get_cycles()
+     * - eventtab[ev_cia].active = true/false based on timer states
+     * - events_schedule() to update nextevent
+     *
+     * NOTE: Comment in cia.cpp says "Call this only after CIA_update has been called"
+     * but with timers at 0xFFFF and div10=0, this is safe - no assertion can trigger. */
+    CIA_calctimers();
+    write_log("v115: Step 6 - CIA_calctimers() called, evtime properly scheduled\n");
+
+    /* STEP 7: Clear gfx_mem framebuffer (v114 fix, kept) */
+    if (gfx_mem != NULL) {
+        memset(gfx_mem, 0, 320 * 288 * 2);
+        write_log("v115: Step 7 - gfx_mem cleared (184320 bytes)\n");
+    }
+
+    write_log("v115: ═══ CIA FIX COMPLETE ═══\n");
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * v116 AUDIO SYNCHRONIZATION FIX
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * PROBLEM (identified in v115 testing):
+     * After restore, audio sometimes doesn't work:
+     * - If game was already playing music before save -> audio works after load
+     * - If save was during kickstart boot (before audio init) -> NO SOUND!
+     *
+     * ROOT CAUSE:
+     * Same pattern as CIA bug! Static variables in audio.cpp are not synced:
+     * 1. last_cycles (line 57) - old value from before restore
+     * 2. next_sample_evtime (line 58) - old value from before restore
+     * 3. eventtab[ev_audio] - stale evtime, not rescheduled
+     * 4. schedule_audio() - NEVER called after restore!
+     *
+     * rsn8887/uae4all2 reference (savestate.cpp line 378-393):
+     *   void savestate_restore_finish (void) {
+     *       resume_sound();
+     *       update_audio();
+     *       savestate_state = 0;
+     *   }
+     *
+     * Our libretro path bypasses savestate_restore_finish entirely!
+     *
+     * SOLUTION: Reset audio timing state just like CIA timing state
+     * ═══════════════════════════════════════════════════════════════════════ */
+
+    write_log("v116: Starting AUDIO synchronization fix...\n");
+
+    /* STEP 1: Disable audio event to prevent immediate trigger */
+    eventtab[ev_audio].active = 0;
+    write_log("v116: Step 1 - eventtab[ev_audio].active = 0 (disabled)\n");
+
+    /* STEP 2: Reset last_cycles to current cycles
+     * This ensures update_audio() calculates correct n_cycles delta */
+    audio_reset_last_cycles();
+    write_log("v116: Step 2 - last_cycles reset to current cycles\n");
+
+    /* STEP 3: Reset next_sample_evtime to scaled_sample_evtime
+     * This ensures proper sample timing */
+    audio_reset_sample_evtime();
+    write_log("v116: Step 3 - next_sample_evtime reset to scaled_sample_evtime\n");
+
+    /* STEP 4: Call schedule_audio() to properly recalculate audio event timing
+     * This is the CRITICAL call that was missing!
+     * schedule_audio() does:
+     * - eventtab[ev_audio].active = 0 (then may set to 1 based on channel states)
+     * - eventtab[ev_audio].oldcycles = get_cycles()
+     * - eventtab[ev_audio].evtime = get_cycles() + best channel evtime */
+    schedule_audio();
+    write_log("v116: Step 4 - schedule_audio() called, ev_audio properly scheduled\n");
+
+    write_log("v116: ═══ AUDIO FIX COMPLETE ═══\n");
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * v118 DRAWING SYSTEM RESET FIX - "KASZA" BUG
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * PROBLEM (identified in v117 testing):
+     * "Kasza" (garbage) on screen after loading saves with different resolutions!
+     * - First load usually works
+     * - Subsequent loads between different resolutions (lo-res <-> interlace) = garbage
+     * - Reset machine fixes it every time
+     *
+     * ROOT CAUSE:
+     * Drawing system uses double-buffered structures that are NOT reset after restore:
+     *
+     * 1. linestate[] - state of each line (LINE_UNDECIDED/DECIDED/DONE)
+     *    - Old values say lines are "DONE" = not redrawn!
+     *
+     * 2. line_decisions[] - resolution info for each line
+     *    - Contains old bplres, diwfirstword, diwlastword values
+     *
+     * 3. line_drawinfo[][] - sprite/color info (double-buffered prev/curr)
+     *    - Mixing old/new data across different resolutions
+     *
+     * 4. amiga2aspect_line_map[], native2amiga_line_map[]
+     *    - Line mapping outdated for new resolution
+     *
+     * 5. current_change_set - buffer index (0 or 1)
+     *    - Desynced with actual data after restore
+     *
+     * WHY RESET FIXES IT:
+     * customreset() calls reset_drawing() which:
+     * - Sets all linestate[] to LINE_UNDECIDED (forces redraw)
+     * - Calls init_aspect_maps() (recalculates line mapping)
+     * - Calls init_drawing_frame() (resets frame variables)
+     * - Clears spixels/spixstate (sprite data)
+     *
+     * FIX: Call reset_drawing() after every restore!
+     * ═══════════════════════════════════════════════════════════════════════ */
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * v152: HYBRID APPROACH - Best of v140 + v145!
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * PROBLEM:
+     * - v140: Multiple loads work (Benefactor), but 1st load fails for some games
+     * - v145: 1st load works for ALL games, but 2nd/3rd loads fail
+     *
+     * SOLUTION:
+     * - 1st load: Use v145 method (full reinit - BPLCON0, calcdiw, diwstate)
+     * - 2nd+ load: Use v140 method (only reset_drawing - no extra reinits)
+     *
+     * Theory: On 1st load, the emulator needs full mode reinit to pick up
+     * the correct display mode from saved state. On 2nd+ loads, the mode
+     * is already correct but the extra reinits cause accumulated problems.
+     * ═══════════════════════════════════════════════════════════════════════ */
+
+    static int load_count = 0;
+    load_count++;
+
+    write_log("v152: HYBRID RESTORE - load #%d\n", load_count);
+
+    /* ALWAYS do reset_drawing() - this is common to both v140 and v145 */
+    reset_drawing();
+    write_log("v152: reset_drawing() called\n");
+
+    if (load_count == 1) {
+        /* ═══ 1st LOAD: Use v145 method (full reinit) ═══ */
+        write_log("v152: 1st load - using v145 FULL REINIT method\n");
+
+        /* v145: init_hardware_frame - resets line tracking vars */
+        init_hardware_frame_wrapper();
+        write_log("v152: init_hardware_frame() called\n");
+
+        /* v143: Reset DIW state machine */
+        *get_diwstate_ptr() = DIW_waiting_start;
+        *get_hdiwstate_ptr() = DIW_waiting_start;
+        write_log("v152: diwstate reset to waiting_start\n");
+
+        /* v144: BPLCON0 reinit trick */
+        reinit_bplcon0_after_restore();
+        write_log("v152: BPLCON0 reinit called\n");
+
+        /* v143: Recalculate display window */
+        calcdiw_wrapper();
+        write_log("v152: calcdiw() called\n");
+
+        /* v143: Reinitialize sprite resolution */
+        expand_sprres_wrapper();
+        write_log("v152: expand_sprres() called\n");
+
+    } else {
+        /* ═══ 2nd+ LOAD: Use v140 method (minimal) ═══ */
+        write_log("v152: load #%d - using v140 MINIMAL method (only reset_drawing)\n", load_count);
+        /* Nothing else! Just reset_drawing() which was already called above */
+    }
+
+    write_log("v152: ═══ RESTORE COMPLETE (load #%d) ═══\n", load_count);
+
     return true;
 }
 

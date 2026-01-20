@@ -57,6 +57,25 @@ int prefs_gfx_framerate, changed_gfx_framerate;
 char *gfx_mem=NULL;
 unsigned gfx_rowbytes=0;
 
+/* v099: Direct rendering overscan - ZERO overhead Y-offset */
+/* TESTOWO: Y-offset = 24 żeby było widać efekt (jak v098) */
+overscan_settings_t overscan_config = {
+    OVERSCAN_ONLY_Y,  /* mode - POPRAWIONE: musi być ONLY_Y dla 288 linii! */
+    24,               /* y_offset - TESTOWO 24 (przesuwa obraz w dół) */
+    0,                /* y_stretch - not implemented yet */
+    0,                /* x_offset - not implemented yet */
+    0,                /* x_stretch - not implemented yet */
+    0,                /* pending_mode_change */
+    OVERSCAN_ONLY_Y   /* pending_mode - POPRAWIONE */
+};
+
+/* v098: Deklaracje extern dla zmiennych z drawing.cpp */
+extern int VISIBLE_LEFT_BORDER_VAR;
+extern int VISIBLE_RIGHT_BORDER_VAR;
+extern int LINETOSCR_X_ADJUST_BYTES_VAR;
+extern int GFXVIDINFO_WIDTH_VAR;
+extern int GFXVIDINFO_HEIGHT_VAR;
+
 static int red_bits,  green_bits,  blue_bits;
 static int red_shift, green_shift, blue_shift;
 
@@ -145,10 +164,37 @@ static int init_colors (void)
     return 1;
 }
 
+/* v099: Pojedynczy bufor 320×288 - render to większy, wysyłaj środek */
+static int allocate_internal_buffer(void)
+{
+    /* Zwolnij stary bufor jeśli istnieje */
+    if (gfx_mem != NULL) {
+        free(gfx_mem);
+        gfx_mem = NULL;
+    }
+
+    /* JEDEN bufor 320×288 - tak jak v098 ale BEZ gfx_mem_output! */
+    gfx_mem = (char*)calloc(1, 320 * 288 * 2);
+    if (!gfx_mem) return 0;
+
+    gfx_rowbytes = 320 * 2;  /* 640 bytes (RGB565) */
+
+    /* Ustaw borders dla 288 linii - jak v098 ONLY_Y */
+    VISIBLE_LEFT_BORDER_VAR = 72;
+    VISIBLE_RIGHT_BORDER_VAR = 392;
+    LINETOSCR_X_ADJUST_BYTES_VAR = 144;
+    GFXVIDINFO_WIDTH_VAR = 320;
+    GFXVIDINFO_HEIGHT_VAR = 288;  /* KLUCZOWE! Jak v098! */
+
+    return 1;
+}
+
+
 int graphics_setup (void)
 {
-    gfx_mem = (char *) calloc( 1, PREFS_GFX_WIDTH * PREFS_GFX_HEIGHT* 2 );
-    gfx_rowbytes = PREFS_GFX_WIDTH *2;
+    /* v099: Pojedynczy bufor - jak v097 */
+    if (!allocate_internal_buffer())
+        return 0;
 
     if (!init_colors ())
         return 0;

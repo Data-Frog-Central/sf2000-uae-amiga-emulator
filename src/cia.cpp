@@ -214,9 +214,10 @@ static void CIA_update (void)
     }
 }
 
-/* Call this only after CIA_update has been called in the same cycle.  */
+/* Call this only after CIA_update has been called in the same cycle.
+ * v115: Made non-static to allow calling from savestate restore. */
 
-static void CIA_calctimers (void)
+void CIA_calctimers (void)
 {
     long ciaatimea = -1, ciaatimeb = -1, ciabtimea = -1, ciabtimeb = -1;
 
@@ -715,6 +716,14 @@ void CIA_reset (void)
 	DISK_select (ciabprb);
     }
 
+}
+
+/* v115: Reset div10 for savestate restore
+ * div10 is static, so we need this helper function to reset it.
+ * Called from savestate.cpp after restore to ensure consistent state. */
+void CIA_reset_div10(void)
+{
+    div10 = 0;
 }
 
 /* CIA memory access */

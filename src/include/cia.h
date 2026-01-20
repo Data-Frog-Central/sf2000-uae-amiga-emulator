@@ -10,6 +10,8 @@ extern void CIA_reset (void);
 extern void CIA_vsync_handler (void);
 extern void CIA_hsync_handler (void);
 extern void CIA_handler (void);
+extern void CIA_calctimers (void);   /* v115: needed for savestate restore */
+extern void CIA_reset_div10 (void);  /* v115: reset static div10 variable */
 
 extern void diskindex_handler (void);
 

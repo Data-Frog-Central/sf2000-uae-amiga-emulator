@@ -57,16 +57,22 @@
 #define _INLINE_
 #endif
 
+/* v098: Zmienne globalne dla overscan (zamiast #define) */
+int VISIBLE_LEFT_BORDER_VAR = 72;
+int VISIBLE_RIGHT_BORDER_VAR = 392;
+int LINETOSCR_X_ADJUST_BYTES_VAR = 144;
+int GFXVIDINFO_WIDTH_VAR = 320;
+int GFXVIDINFO_HEIGHT_VAR = 240;
+
+/* v098: Makra kompatybilności (używane w całym kodzie) */
+#define VISIBLE_LEFT_BORDER      VISIBLE_LEFT_BORDER_VAR
+#define VISIBLE_RIGHT_BORDER     VISIBLE_RIGHT_BORDER_VAR
+#define LINETOSCR_X_ADJUST_BYTES LINETOSCR_X_ADJUST_BYTES_VAR
+#define GFXVIDINFO_WIDTH         GFXVIDINFO_WIDTH_VAR
+#define GFXVIDINFO_HEIGHT        GFXVIDINFO_HEIGHT_VAR
 
 #define GFXVIDINFO_PIXBYTES 2
-#define GFXVIDINFO_WIDTH 320
-#define GFXVIDINFO_HEIGHT 240
-//#define GFXVIDINFO_WIDTH 640
-//#define GFXVIDINFO_HEIGHT 480
 #define MAXBLOCKLINES 240
-#define VISIBLE_LEFT_BORDER 72
-#define VISIBLE_RIGHT_BORDER 392
-#define LINETOSCR_X_ADJUST_BYTES 144
 /*
 #define VISIBLE_LEFT_BORDER 64
 #define VISIBLE_RIGHT_BORDER 384
@@ -84,6 +90,15 @@ static int res_shift;
 static int interlace_seen = 0;
 
 extern int drawfinished;
+
+// v102: LED position base line from libretro-core.cpp (y_start + 240)
+extern int uae_led_base_line;
+
+// v106: Y-Stretch mode from core-mapper.cpp (0=OFF, 1=Small, 2=Medium, 3=Large)
+// When stretch is active, LEDs are drawn in libretro-core.cpp AFTER stretch operation
+extern int sf2000_v_stretch;
+// v109: Show LEDs option (0=OFF, 1=ON)
+extern int sf2000_show_leds;
 
 /* Lookup tables for dual playfields.  The dblpf_*1 versions are for the case
    that playfield 1 has the priority, dbplpf_*2 are used if playfield 2 has
@@ -2002,7 +2017,8 @@ static _INLINE_ void draw_status_line (int line)
     else
         x = TD_PADX;
 
-    y = line - (GFXVIDINFO_HEIGHT - TD_TOTAL_HEIGHT);
+    // v102: Use uae_led_base_line for y calculation
+    y = line - (uae_led_base_line - TD_TOTAL_HEIGHT);
     xlinebuffer = row_map[line];
 
 #ifndef USE_ALL_LINES
@@ -2129,11 +2145,15 @@ static _INLINE_ void finish_drawing_frame (void)
 	back_drive_motor3=gui_data.drive_motor[3];
 #endif
 	back_powerled=gui_data.powerled;
- 	for (i = 0; i < TD_TOTAL_HEIGHT; i++) {
-		int line = GFXVIDINFO_HEIGHT - TD_TOTAL_HEIGHT + i;
-		draw_status_line (line);
-		do_flush_line (line);
-    	}
+	// v109: Skip LED drawing when Y-Stretch is active OR show_leds is OFF
+	if (sf2000_v_stretch == 0 && sf2000_show_leds) {
+		// v102: Use uae_led_base_line for LED position (accounts for y_offset)
+		for (i = 0; i < TD_TOTAL_HEIGHT; i++) {
+			int line = uae_led_base_line - TD_TOTAL_HEIGHT + i;
+			draw_status_line (line);
+			do_flush_line (line);
+		}
+	}
     }
 #else
 	back_drive_track0=gui_data.drive_track[0];
@@ -2151,11 +2171,15 @@ static _INLINE_ void finish_drawing_frame (void)
 	back_drive_motor3=gui_data.drive_motor[3];
 #endif
 	back_powerled=gui_data.powerled;
- 	for (i = 0; i < TD_TOTAL_HEIGHT; i++) {
-		int line = GFXVIDINFO_HEIGHT - TD_TOTAL_HEIGHT + i;
-		draw_status_line (line);
-		do_flush_line (line);
-    	}
+	// v109: Skip LED drawing when Y-Stretch is active OR show_leds is OFF
+	if (sf2000_v_stretch == 0 && sf2000_show_leds) {
+		// v102: Use uae_led_base_line for LED position (accounts for y_offset)
+		for (i = 0; i < TD_TOTAL_HEIGHT; i++) {
+			int line = uae_led_base_line - TD_TOTAL_HEIGHT + i;
+			draw_status_line (line);
+			do_flush_line (line);
+		}
+	}
 
 
 #endif

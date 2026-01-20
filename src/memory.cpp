@@ -1765,11 +1765,15 @@ void restore_zram (int len, long filepos)
 
 uae_u8 *save_expansion (int *len)
 {
-    static uae_u8 t[20], *dst = t;
+    /* v112 FIX: dst must NOT be static!
+     * Bug: static dst was never reset, causing buffer overflow after 2-3 saves
+     * Each save_u32() advances dst by 4 bytes, so after 3 saves dst = t+24 (overflow!) */
+    static uae_u8 t[20];
+    uae_u8 *dst = t;  /* Reset to start of buffer each call! */
     save_u32 (0);
     save_u32 (0);
     *len = 8;
-    return dst;
+    return t;  /* Return start of buffer, not advanced pointer */
 }
 
 uae_u8 *restore_expansion (uae_u8 *src)

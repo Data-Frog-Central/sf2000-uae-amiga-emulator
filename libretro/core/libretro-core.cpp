@@ -14,10 +14,13 @@
 #include "sysdeps.h"
 #include "options.h"
 #include "custom.h"
+#include "xwin.h"
 
 #include "m68k/uae/newcpu.h"
 
 #include "savestate.h"
+
+#include "splash_logo.h"  /* v137: Splash screen logo */
 
 #ifndef NO_ZLIB
 #include "zlib.h"
@@ -47,6 +50,7 @@ static const char *strcasestr(const char *haystack, const char *needle) {
 extern size_t save_state_to_buffer(void *buffer, size_t max_size);
 extern bool restore_state_from_buffer(const void *buffer, size_t size);
 extern int savestate_state;  /* UAE4ALL save state status global */
+/* v145: fs_* externs and restore_state removed - no more temp file mechanism! */
 
 unsigned int VIRTUAL_WIDTH=PREFS_GFX_WIDTH;
 unsigned int retrow=PREFS_GFX_WIDTH;
@@ -56,11 +60,16 @@ extern char *gfx_mem;
 
 // v094: Y-offset and V-stretch
 extern int mainMenu_vpos;      // from retrogfx.cpp
-extern int sf2000_y_offset;    // from core-mapper.cpp (-50 to +50)
-extern int sf2000_v_stretch;   // from core-mapper.cpp (0 to 32)
+extern int sf2000_y_offset;       // from core-mapper.cpp (-50 to +50)
+extern int sf2000_pos_correction; // v101: from core-mapper.cpp (0=OFF, 1=ON)
+extern int sf2000_v_stretch;      // from core-mapper.cpp (0 to 32)
+extern int sf2000_show_leds;      // v109: from core-mapper.cpp (0=OFF, 1=ON)
 
 // v097: Global variable for Y-offset accessible from drawing.cpp
 int uae_render_y_offset = 0;
+
+// v102: Global variable for LED position - base line for status bar (y_start + 240)
+int uae_led_base_line = 240;
 
 extern char uae4all_image_file[];
 extern char uae4all_image_file2[];
@@ -112,8 +121,111 @@ static retro_audio_sample_t audio_cb;
 static retro_audio_sample_batch_t audio_batch_cb;
 static retro_environment_t environ_cb;
 
+// v105: Y-Stretch buffer (320 x 240 x 2 bytes = 153600 bytes)
+static uint16_t stretch_buffer[320 * 240];
+
+// v106: LED drawing after stretch - need gui_data for drive status
+#include "gui.h"
+
+// v109: Digit patterns for track numbers (from drawing.cpp)
+// Each digit is 7x7 pixels, 'x' = white pixel, '-' = transparent
+static const char *led_numbers =
+"------ ------ ------ ------ ------ ------ ------ ------ ------ ------ "
+"-xxxxx ---xx- -xxxxx -xxxxx -x---x -xxxxx -xxxxx -xxxxx -xxxxx -xxxxx "
+"-x---x ----x- -----x -----x -x---x -x---- -x---- -----x -x---x -x---x "
+"-x---x ----x- -xxxxx -xxxxx -xxxxx -xxxxx -xxxxx ----x- -xxxxx -xxxxx "
+"-x---x ----x- -x---- -----x -----x -----x -x---x ---x-- -x---x -----x "
+"-xxxxx ----x- -xxxxx -xxxxx -----x -xxxxx -xxxxx ---x-- -xxxxx -xxxxx "
+"------ ------ ------ ------ ------ ------ ------ ------ ------ ------ ";
+
+#define LED_NUM_WIDTH 7
+#define LED_NUM_HEIGHT 7
+
+// v109: Draw a single digit on stretch_buffer at (x,y)
+static void draw_digit_on_stretch(int x, int y, int digit) {
+    if (digit < 0 || digit > 9) return;
+
+    for (int row = 0; row < LED_NUM_HEIGHT; row++) {
+        int screen_y = y + row;
+        if (screen_y < 0 || screen_y >= 240) continue;
+
+        const char *numptr = led_numbers + digit * LED_NUM_WIDTH + 10 * LED_NUM_WIDTH * row;
+
+        for (int col = 0; col < LED_NUM_WIDTH; col++) {
+            int screen_x = x + col;
+            if (screen_x < 0 || screen_x >= 320) continue;
+
+            if (numptr[col] == 'x') {
+                stretch_buffer[screen_y * 320 + screen_x] = 0xFFFF;  // White
+            }
+        }
+    }
+}
+
+// v109: Draw LEDs directly to stretch_buffer (fixed position at bottom-right)
+// LEDs don't move with stretch and are always at screen bottom
+// Includes track numbers!
+static void draw_leds_on_stretch_buffer(void) {
+    // LED dimensions (from drawing.cpp)
+    const int TD_PADX = 20;
+    const int TD_PADY = 2;
+    const int TD_LED_WIDTH = 18;
+    const int TD_LED_HEIGHT = 4;
+    const int TD_WIDTH = 26;
+    const int TD_TOTAL_HEIGHT = TD_PADY * 2 + LED_NUM_HEIGHT;  // 2+2+7=11
+
+    // Position: bottom-right corner
+    int base_x = 320 - TD_PADX - 5*TD_WIDTH + 100 - (TD_WIDTH*(NUM_DRIVES-1));
+    int base_y = 240 - TD_TOTAL_HEIGHT;
+
+    // Draw 5 LEDs: Power + 4 drives
+    for (int led = 0; led < (NUM_DRIVES+1); led++) {
+        int on;
+        uint16_t color;
+        int track = -1;
+
+        if (led > 0) {
+            // Drive LED
+            on = gui_data.drive_motor[led-1];
+            color = on ? 0x07E0 : 0x0200;  // Green (bright/dim)
+            track = gui_data.drive_track[led-1];  // v109: Get track number
+        } else {
+            // Power LED
+            on = gui_data.powerled;
+            color = on ? 0xF800 : 0x4000;  // Red (bright/dim)
+        }
+
+        // Draw LED rectangle
+        int led_x = base_x + led * TD_WIDTH;
+        for (int dy = 0; dy < TD_LED_HEIGHT; dy++) {
+            int y = base_y + dy;
+            if (y >= 0 && y < 240) {
+                for (int dx = 0; dx < TD_LED_WIDTH; dx++) {
+                    int x = led_x + dx;
+                    if (x >= 0 && x < 320) {
+                        stretch_buffer[y * 320 + x] = color;
+                    }
+                }
+            }
+        }
+
+        // v109: Draw track number below LED (only for drives, not power)
+        if (track >= 0) {
+            int num_offs = (TD_WIDTH - 2 * LED_NUM_WIDTH) / 2 - 4;
+            int num_y = base_y + TD_PADY;
+            draw_digit_on_stretch(led_x + num_offs, num_y, track / 10);
+            draw_digit_on_stretch(led_x + num_offs + LED_NUM_WIDTH, num_y, track % 10);
+        }
+    }
+}
+
 struct zfile *retro_deserialize_file = NULL;
 static size_t save_state_file_size = 0;
+
+/* v145: Delayed load mechanism REMOVED!
+ * The v123 mechanism wrote 13MB+ temp file to SD card every load.
+ * This was wasteful and the file was never deleted (no fs_unlink in firmware).
+ * Now we always use direct buffer I/O - simpler and no card waste. */
 
 int libretroreset = 1;
 
@@ -461,7 +573,7 @@ void retro_get_system_info(struct retro_system_info *info)
 {
    memset(info, 0, sizeof(*info));
    info->library_name     = "uae4all";
-   info->library_version  = "v083";
+   info->library_version  = UAE_VERSION;
    info->valid_extensions = "adf|adz|zip";
    info->need_fullpath    = true;
    info->block_extract    = false;
@@ -509,6 +621,15 @@ void retro_run(void)
    int x;
    bool updated = false;
    static int Deffered = 0;
+
+   /* v145: Delayed load mechanism REMOVED - no more temp file creation! */
+
+   // v099: NULL CHECK - zapobiega crash gdy gfx_mem nie zainicjalizowany!
+   extern char *gfx_mem;
+   if (gfx_mem == NULL) {
+      video_cb(NULL, retrow, retroh, retrow<<PIXEL_BYTES);
+      return;
+   }
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
       update_prefs_retrocfg();
@@ -561,34 +682,101 @@ void retro_run(void)
    }
 
 
-   // v097: Set Y-offset for drawing.cpp (shifts which Amiga lines are rendered)
-   uae_render_y_offset = sf2000_y_offset;
+   // v099: NIE używaj uae_render_y_offset! Offset tylko przez pointer arithmetic!
+   extern overscan_settings_t overscan_config;
+   uae_render_y_offset = 0;  // UAE zawsze renderuje te same linie Amiga
 
    // v017: Only run M68K if not paused (menu or keyboard)
    if(pauseg==0)
       m68k_go (1);
 
-   // v058: Draw overlays (menu/settings/about/disk shuffler/keyboard)
+   // v101: Y-offset calculation with Position Correction support
+   extern unsigned gfx_rowbytes;  // from retrogfx.cpp
+   int y_start;
+
+   if (sf2000_pos_correction) {
+       // v103: Position Correction ON - direct y-offset mapping
+       // sf2000_y_offset: 0 to 48, where 0=top of buffer, 48=bottom
+       // (poprzednio y_start = 24 + y_offset, teraz y_start = y_offset)
+       y_start = sf2000_y_offset;
+       if (y_start < 0) y_start = 0;
+       if (y_start > 48) y_start = 48;  // max: 288-240=48
+   } else {
+       // v101: Position Correction OFF - tryb v97 (bez offsetu)
+       y_start = 0;  // Pokaż od góry bufora
+   }
+
+   // v102: Update LED base line for drawing.cpp - LEDs should be at screen bottom
+   uae_led_base_line = y_start + 240;
+
+   // Overlays rysują do TEJ SAMEJ części co będzie wysłana!
+   // KLUCZOWE: overlay_ptr = gfx_mem + (y_start * gfx_rowbytes)
+   // To znaczy overlays rysują do środkowej części 240 linii z 288
+   char *overlay_ptr = gfx_mem + (y_start * gfx_rowbytes);
+
    if(sf2000_disk_shuffler_active) {
-      sf2000_disk_shuffler_overlay(gfx_mem);  // v055: Disk shuffler submenu
+      sf2000_disk_shuffler_overlay(overlay_ptr);  // v055: Disk shuffler submenu
    } else if(sf2000_settings_active) {
-      sf2000_settings_overlay(gfx_mem);  // v058: Settings submenu
+      sf2000_settings_overlay(overlay_ptr);  // v058: Settings submenu
    } else if(sf2000_about_active) {
-      sf2000_about_overlay(gfx_mem);  // v058: About submenu
+      sf2000_about_overlay(overlay_ptr);  // v058: About submenu
    } else if(sf2000_menu_active) {
-      sf2000_menu_overlay(gfx_mem);  // Main menu
+      sf2000_menu_overlay(overlay_ptr);  // Main menu
    } else if(SHOWKEY==1) {
       retro_virtualkb();  // Keyboard overlay
    }
 
    // v058: Feedback message (always on top of emulation)
-   sf2000_feedback_overlay(gfx_mem);
+   sf2000_feedback_overlay(overlay_ptr);
 
    flush_audio();
 
    DISK_GUI_change();
 
-   video_cb(gfx_mem,retrow,retroh,retrow<<PIXEL_BYTES);
+   // v109: Y-Stretch with multiple levels
+   // 0=OFF, 1=Small (skip/32), 2=Medium (skip/16), 3=Large (skip/12)
+   // Menu and overlays are NOT stretched - only game graphics!
+   int overlay_active = sf2000_menu_active || sf2000_settings_active ||
+                        sf2000_about_active || sf2000_disk_shuffler_active || (SHOWKEY == 1);
+
+   if (sf2000_v_stretch > 0 && sf2000_pos_correction && !overlay_active) {
+       // Determine skip divisor based on stretch level
+       int skip_div;
+       switch (sf2000_v_stretch) {
+           case 1: skip_div = 32; break;  // Small: ~247 lines
+           case 2: skip_div = 16; break;  // Medium: ~255 lines
+           case 3: skip_div = 12; break;  // Large: ~260 lines
+           default: skip_div = 16; break;
+       }
+
+       // v109: max_available = how many lines available from y_start position
+       // Buffer is 288 lines, we start at y_start, so we have (288 - y_start) lines
+       int max_available = 288 - y_start - 1;
+
+       // Copy lines with skip pattern
+       uint16_t *src_base = (uint16_t*)overlay_ptr;
+       for (int disp_line = 0; disp_line < 240; disp_line++) {
+           int src_line = disp_line + (disp_line / skip_div);
+           // Clamp to available buffer (don't read past gfx_mem end)
+           if (src_line > max_available) src_line = max_available;
+           uint16_t *src_row = src_base + (src_line * 320);
+           uint16_t *dst_row = stretch_buffer + (disp_line * 320);
+           for (int x = 0; x < 320; x++) {
+               dst_row[x] = src_row[x];
+           }
+       }
+
+       // v109: Draw LEDs on stretch_buffer AFTER stretch (fixed position)
+       // Only draw if show_leds is ON
+       if (sf2000_show_leds) {
+           draw_leds_on_stretch_buffer();
+       }
+
+       video_cb(stretch_buffer, retrow, retroh, retrow << PIXEL_BYTES);
+   } else {
+       // v099: Wysyłaj tę samą część co overlays (ZERO copy!)
+       video_cb(overlay_ptr, retrow, retroh, retrow << PIXEL_BYTES);
+   }
 
 }
 
@@ -616,6 +804,45 @@ bool retro_load_game(const struct retro_game_info *info)
    libretroreset = 1;
 
    quit_program = 2;
+
+   /* v137: WARMUP LOOP - Boot Amiga behind splash screen
+    * This runs BEFORE retro_run() is ever called, so Start+Select menu is blocked!
+    * After 350 frames (~7 sec), reset Amiga for proper audio initialization.
+    */
+   {
+       #define V137_WARMUP_FRAMES 350
+       static uint16_t splash_buffer[320 * 240];
+
+       for (int frame = 0; frame < V137_WARMUP_FRAMES; frame++) {
+           /* 1. Copy logo to splash buffer */
+           for (int i = 0; i < 320 * 240; i++) {
+               splash_buffer[i] = splash_logo_data[i];
+           }
+
+           /* 2. Draw blue progress bar at top (12px high, full 320px width) */
+           int progress_width = (frame * 320) / V137_WARMUP_FRAMES;
+           if (progress_width > 319) progress_width = 319;
+           for (int y = 0; y < 12; y++) {
+               for (int x = 0; x < progress_width; x++) {
+                   splash_buffer[y * 320 + x] = 0x001F;  /* Blue RGB565 */
+               }
+           }
+
+           /* 3. Show splash screen */
+           video_cb(splash_buffer, retrow, retroh, retrow << PIXEL_BYTES);
+
+           /* 4. Run Amiga one frame in background */
+           if (pauseg == 0) {
+               m68k_go(1);
+           }
+
+           /* 5. Flush audio */
+           flush_audio();
+       }
+
+       /* 6. Reset Amiga after warmup - audio will be properly initialized */
+       uae_reset();
+   }
 
    return true;
 }
@@ -697,8 +924,10 @@ bool retro_unserialize(const void *data, size_t size)
 {
    DIAG("retro_unserialize: restoring state from buffer (direct I/O)");
 
-   /* v082: Direct buffer I/O - no temp file!
-    * restore_state_from_buffer returns true on success */
+   /* v145: Delayed load mechanism REMOVED!
+    * v123 wrote 13MB+ temp files to SD card that were never deleted.
+    * Now we ALWAYS use direct buffer I/O - simpler and no card waste. */
+
    bool success = restore_state_from_buffer(data, size);
 
    if (success) {
